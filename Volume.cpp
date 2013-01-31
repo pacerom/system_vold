@@ -35,6 +35,8 @@
 
 #include <private/android_filesystem_config.h>
 
+#include <blkid/blkid.h>
+
 #define LOG_TAG "Vold"
 
 #include <cutils/fs.h>
@@ -51,7 +53,6 @@
 
 extern "C" void dos_partition_dec(void const *pp, struct dos_partition *d);
 extern "C" void dos_partition_enc(void *pp, struct dos_partition *d);
-
 
 /*
  * Media directory - stuff that only media_rw user can see
@@ -139,6 +140,22 @@ dev_t Volume::getDiskDevice() {
 
 dev_t Volume::getShareDevice() {
     return getDiskDevice();
+}
+
+char *getFsType(const char * devicePath) {
+    char *fstype = NULL;
+
+    SLOGD("Trying to get filesystem type for %s \n", devicePath);
+
+    fstype = blkid_get_tag_value(NULL, "TYPE", devicePath);
+    if (fstype) {
+        SLOGD("Found %s filesystem on %s\n", fstype, devicePath);
+    } else {
+        SLOGE("None or unknown filesystem on %s\n", devicePath);
+        return NULL;
+    }
+
+    return fstype;
 }
 
 void Volume::handleVolumeShared() {
@@ -414,6 +431,7 @@ int Volume::mountVol() {
 
     for (i = 0; i < n; i++) {
         char devicePath[255];
+        char *fstype = NULL;
 
         sprintf(devicePath, "/dev/block/vold/%d:%d", MAJOR(deviceNodes[i]),
                 MINOR(deviceNodes[i]));
@@ -423,25 +441,38 @@ int Volume::mountVol() {
         errno = 0;
         setState(Volume::State_Checking);
 
-        if (Fat::check(devicePath)) {
-            if (errno == ENODATA) {
-                SLOGW("%s does not contain a FAT filesystem\n", devicePath);
-                continue;
-            }
-            errno = EIO;
-            /* Badness - abort the mount */
-            SLOGE("%s failed FS checks (%s)", devicePath, strerror(errno));
-            setState(Volume::State_Idle);
-            return -1;
-        }
-
         errno = 0;
         int gid;
 
-        if (Fat::doMount(devicePath, getMountpoint(), false, false, false,
-                AID_MEDIA_RW, AID_MEDIA_RW, 0007, true)) {
-            SLOGE("%s failed to mount via VFAT (%s)\n", devicePath, strerror(errno));
-            continue;
+        fstype = getFsType((const char *)devicePath);
+
+        if (fstype != NULL) {
+            if (strcmp(fstype, "vfat") == 0) {
+
+                if (Fat::check(devicePath)) {
+                    errno = EIO;
+                    /* Badness - abort the mount */
+                    SLOGE("%s failed FS checks (%s)", devicePath, strerror(errno));
+                    setState(Volume::State_Idle);
+                    free(fstype);
+                    return -1;
+                }
+
+                if (Fat::doMount(devicePath, getMountpoint(), false, false, false,
+                            AID_MEDIA_RW, AID_MEDIA_RW, 0007, true)) {
+                    SLOGE("%s failed to mount via VFAT (%s)\n", devicePath, strerror(errno));
+                    continue;
+                }
+
+            } else {
+                // Unsupported filesystem
+                errno = ENODATA;
+                setState(Volume::State_Idle);
+                free(fstype);
+                return -1;
+            }
+
+            free(fstype);
         }
 
         extractMetadata(devicePath);
