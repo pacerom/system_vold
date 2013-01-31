@@ -47,6 +47,7 @@
 #include "Volume.h"
 #include "VolumeManager.h"
 #include "ResponseCode.h"
+#include "Ext4.h"
 #include "Fat.h"
 #include "Process.h"
 #include "cryptfs.h"
@@ -464,6 +465,22 @@ int Volume::mountVol() {
                     continue;
                 }
 
+            } else if (strcmp(fstype, "ext4") == 0) {
+
+                if (Ext4::check(devicePath)) {
+                    errno = EIO;
+                    /* Badness - abort the mount */
+                    SLOGE("%s failed FS checks (%s)", devicePath, strerror(errno));
+                    setState(Volume::State_Idle);
+                    free(fstype);
+                    return -1;
+                }
+
+                if (Ext4::doMount(devicePath, getMountpoint(), false, false, false)) {
+                    SLOGE("%s failed to mount via EXT4 (%s)\n", devicePath, strerror(errno));
+                    continue;
+                }
+
             } else {
                 // Unsupported filesystem
                 errno = ENODATA;
@@ -473,6 +490,13 @@ int Volume::mountVol() {
             }
 
             free(fstype);
+
+        } else {
+            // Unsupported filesystem
+            errno = ENODATA;
+            setState(Volume::State_Idle);
+            free(fstype);
+            return -1;
         }
 
         extractMetadata(devicePath);
